@@ -66,7 +66,9 @@ If it returns page content, the prerequisite is satisfied.
 
 ## Step 4: install video-watch
 
-This skill **depends on** [video-watch](../video-watch) for video understanding (local transcription + frame extraction, nothing uploaded). Install it per its README first: ffmpeg, faster-whisper, etc.
+This skill **depends on the `video-watch` skill** for video understanding (local transcription + frame extraction, nothing uploaded). Install it per its own README first: ffmpeg, faster-whisper, etc.
+
+> It is a separate project and is not distributed with this repository. Search for the `video-watch` skill, or install the DSH plugin package that provides it.
 
 ---
 

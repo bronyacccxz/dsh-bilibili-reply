@@ -66,7 +66,9 @@
 
 ## 第 4 项：装 video-watch
 
-本技能**依赖** [video-watch](../video-watch) 做视频理解（本地转写 + 抽帧，不传云端）。请先按它的 README 装好：ffmpeg、faster-whisper 等。
+本技能**依赖 `video-watch` 技能**做视频理解（本地转写 + 抽帧，不传云端）。请先按它自己的 README 装好：ffmpeg、faster-whisper 等。
+
+> 它是独立项目，不随本仓库分发。搜索 `video-watch` 技能，或找提供该技能的 DSH 插件包安装。
 
 ---
 
