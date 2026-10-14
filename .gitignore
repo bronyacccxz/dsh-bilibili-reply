@@ -1,0 +1,9 @@
+# 使用者的个人配置（含 B 站昵称/UID），不该进版本库
+config.md
+
+# 编辑器 / 系统杂项
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

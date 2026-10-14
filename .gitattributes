@@ -1,0 +1,8 @@
+# 跨平台保持一致：这几个文件都是文本，统一用 LF，避免 CRLF 造成整文件 diff
+* text=auto
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+LICENSE text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
