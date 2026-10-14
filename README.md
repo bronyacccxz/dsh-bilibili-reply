@@ -16,6 +16,69 @@
 
 这个技能把整条链路固定下来，并踩平了几个真实的坑。
 
+---
+
+# ⚠️ 前置条件（必读）
+
+**这个技能不是装进任何 AI 就能用。** 它需要「AI 能操控一个已登录 B 站的浏览器」——**没有这一条，技能完全无法工作**（读不到 B 站，也发不了评论）。
+
+| # | 前置 | 说明 | 链接 |
+|---|---|---|---|
+| 1 | **DeepSeek Harness（DSH）** | 技能运行在它的 Agent 上 | <https://github.com/deepseek-ai/deepseek-harness> |
+| 2 | **pnpm** | DSH 用它管理插件 | <https://pnpm.io/installation> |
+| 3 | **浏览器自动化**（关键） | 让 AI 能操作浏览器 —— 见下 | <https://github.com/Tencent/BrowserSkill> |
+| 4 | **`video-watch` 技能** | 负责视频理解 | 见它的 README |
+
+## 第 3 项：装浏览器自动化
+
+推荐 **[BrowserSkill](https://github.com/Tencent/BrowserSkill)**（腾讯开源的浏览器自动化，提供 `bsk` CLI + 浏览器扩展）。
+
+```text
+① 按 BrowserSkill 的快速开始装 bsk CLI
+   https://github.com/Tencent/BrowserSkill#quick-start
+
+② 在 Chrome 或 Edge 里安装并连接 BrowserSkill 扩展
+
+③ 确保 bsk 在「启动 dsh 时的 PATH」里
+   —— 不在也行，稍后在插件配置里写 bskPath 绝对路径
+
+④ 把 DSH 插件装进你的 profile（desktop / web 按你的实际用）
+   dsh plugin --profile web add @wxg-prc-cpg/browser-skill-dsh-plugin
+   dsh --profile web
+```
+
+**验证装好了**：在 DSH 对话里说
+
+```text
+/browser-skill 打开 bilibili.com 并总结页面
+```
+
+能返回页面内容 → 前置通了。
+
+> **换别的浏览器自动化也可以。** 本技能需要的是「读页面 / 点击 / 填表单」这几样能力；`SKILL.md` 里的示例按 `browser_*` 工具写，换成你手上的工具即可，**流程逻辑不变**。
+
+## 第 4 项：装 video-watch
+
+本技能**依赖** [video-watch](../video-watch) 做视频理解（本地转写 + 抽帧，不传云端）。请先按它的 README 装好：ffmpeg、faster-whisper 等。
+
+---
+
+# 快速开始（完整流程）
+
+```text
+① 装好上面 4 个前置
+② git clone <本仓库地址> <DSH_HOME>/skills/bilibili-reply
+③ cp config.example.md config.md   →  填写你的昵称和机器人账号
+④ 在浏览器里登录你的 B 站账号（建议小号 —— 技能会用它发言）
+⑤ 用主号在某个视频下发一条评论并 @ 那个小号
+⑥ 对 AI 说：「我@你了，去看看」
+⑦ 观察它：读通知 → 核对身份 → 分析视频 → 回评论
+```
+
+**第 ③ 步不能省** —— 技能靠昵称核对身份，没配就不知道该回谁。
+
+---
+
 ## 功能
 
 | 能力 | 说明 |
@@ -24,34 +87,6 @@
 | **视频理解** | 调 `video-watch`：本地转文字 + 抽帧，不传云端 |
 | **按类型回复** | 教学类给**分章时间戳**；玩乐类给情绪反应；沉重内容克制处理 |
 | **可跳转时间戳** | 用纯文本 `00:00` 格式，B 站会自动转成点击跳转 |
-
-## 安装
-
-### 1. 装依赖：video-watch
-
-本技能**依赖** [video-watch](../video-watch) 做视频理解，请先按它的 README 装好。
-
-### 2. 放入技能目录
-
-```bash
-# 把整个目录放进你的技能目录，目录名必须是 bilibili-reply
-git clone <本仓库地址> <DSH_HOME>/skills/bilibili-reply
-```
-
-（DSH 默认技能目录是 `~/.dsh/skills/`；其它 Agent 请放进它自己的技能目录。）
-
-### 3. 填配置
-
-```bash
-cp config.example.md config.md
-# 然后编辑 config.md，填你的昵称和机器人账号
-```
-
-**这一步不能省**：技能靠昵称核对身份，没配就不知道该回谁。
-
-### 4. 确认浏览器自动化可用
-
-技能里用的是 DSH 的 `browser_*` 工具。换环境时把这一步换成你手上的浏览器工具，流程逻辑不变。
 
 ## 用法
 
