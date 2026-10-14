@@ -33,7 +33,12 @@
 
 ## 第 3 项：装浏览器自动化
 
-推荐 **[BrowserSkill](https://github.com/Tencent/BrowserSkill)**（腾讯开源的浏览器自动化，提供 `bsk` CLI + 浏览器扩展）。
+推荐 **[BrowserSkill](https://github.com/Tencent/BrowserSkill)** —— 腾讯开源的浏览器自动化，⭐ 8.8k，MIT 许可。它提供 `bsk` CLI + 浏览器扩展，**让 AI 用你真实的、已登录的浏览器**，而不需要另开一个干净会话重新登录。
+
+> **本项目实际使用的就是这一套。** 这是 monorepo，我们装的 DSH 插件是其中一个子包：
+> - 仓库主页：<https://github.com/Tencent/BrowserSkill>
+> - **DSH 插件子目录（含插件自己的 README）**：<https://github.com/Tencent/BrowserSkill/tree/main/packages/dsh-plugin-browserskill>
+> - npm 包名：`@wxg-prc-cpg/browser-skill-dsh-plugin`
 
 ```text
 ① 按 BrowserSkill 的快速开始装 bsk CLI

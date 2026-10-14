@@ -33,7 +33,12 @@ This skill pins that whole chain down, and flattens a few real pitfalls along th
 
 ## Step 3: install browser automation
 
-We recommend **[BrowserSkill](https://github.com/Tencent/BrowserSkill)** (Tencent's open-source browser automation: a `bsk` CLI plus a browser extension).
+We recommend **[BrowserSkill](https://github.com/Tencent/BrowserSkill)** — Tencent's open-source browser automation (⭐ 8.8k, MIT). It ships a `bsk` CLI plus a browser extension, so **the AI drives your real, already-logged-in browser** instead of a clean profile you'd have to log into again.
+
+> **This is the exact stack this project uses.** It's a monorepo; the DSH plugin we install is one sub-package:
+> - Repo: <https://github.com/Tencent/BrowserSkill>
+> - **DSH plugin subdirectory (its own README)**: <https://github.com/Tencent/BrowserSkill/tree/main/packages/dsh-plugin-browserskill>
+> - npm package: `@wxg-prc-cpg/browser-skill-dsh-plugin`
 
 ```text
 1. Install the bsk CLI per BrowserSkill's quick start
