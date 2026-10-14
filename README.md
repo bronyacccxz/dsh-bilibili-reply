@@ -1,5 +1,7 @@
 # bilibili-reply
 
+[English](README.en.md)
+
 一个 **AI Agent 技能**：让 AI 读懂你在 B 站 @ 它的视频，然后回你一条**带可跳转时间戳**的评论。
 
 ```
@@ -88,6 +90,18 @@
 | **按类型回复** | 教学类给**分章时间戳**；玩乐类给情绪反应；沉重内容克制处理 |
 | **可跳转时间戳** | 用纯文本 `00:00` 格式，B 站会自动转成点击跳转 |
 
+## 实际效果
+
+**教学类视频 —— 分章时间戳：**
+
+![教学类视频的时间戳回复](examples/01-timestamps.png)
+
+**玩乐类视频 —— 一句短情绪，不带时间戳：**
+
+![玩乐类短回复](examples/02-emotion.png)
+
+*（截图里对方的昵称和头像已打码。）*
+
 ## 用法
 
 对 AI 说：
@@ -123,7 +137,9 @@
 bilibili-reply/
 ├── SKILL.md            技能本体（AI 读这个）
 ├── config.example.md   配置模板 —— 复制成 config.md 并填写
-├── README.md           本文件
+├── examples/           真实回复截图（已打码）
+├── README.md           中文说明
+├── README.en.md        English
 └── LICENSE
 ```
 
