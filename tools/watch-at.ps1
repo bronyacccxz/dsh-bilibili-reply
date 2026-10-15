@@ -334,6 +334,13 @@ if ($Test) {
 }
 
 # ---------- 主流程 ----------
+# 配置没填 UID 就别默默跑：否则每条通知都会被判成「不是主人发的」而静默跳过
+# 最常见的成因：配置文件存成了不带 BOM 的 UTF-8，PowerShell 5.1 按 GBK 读，注释里的中文把文件解析坏掉
+if (-not $OwnerMid -or -not $SelfMid) {
+    Write-Log "配置无效：OwnerMid=$OwnerMid SelfMid=$SelfMid —— 检查 watch-at.config.ps1（必须是 UTF-8 with BOM）"
+    Write-Output "配置无效：请在 watch-at.config.ps1 里填好 OwnerMid / SelfMid，并确认文件存成 UTF-8 with BOM。"
+    exit 1
+}
 $state = Read-State
 Write-Log "检查开始"
 
@@ -409,9 +416,18 @@ if ($null -eq $items) {
     exit 0
 }
 
-# 6) 白名单：只留「主人 @ 了我」
+# 6) 接口回 0 条 = 可疑（多半被限流或抖动）：去「@ 我的」页面刷一下再问一次
+if ($items.Count -eq 0) {
+    Write-Log "接口返回 0 条，切到消息中心刷新后重试"
+    Invoke-Bsk @("navigate", "--session", $sessionId, "https://message.bilibili.com/#/at", "--wait-until", "domcontentloaded", "--quiet") | Out-Null
+    Start-Sleep -Seconds 3
+    $items = Get-AtItems $sessionId "" $state
+    if ($null -eq $items -or $items.Count -eq 0) { Write-Log "接口仍然 0 条，本轮跳过"; exit 0 }
+}
+
+# 7) 白名单：只留「主人 @ 了我」
 $ownerItems = @($items | Where-Object { $_.mid -eq $OwnerMid -and ($_.ats -contains $SelfMid) })
-if ($ownerItems.Count -eq 0) { Write-Log "无主人 @"; exit 0 }
+if ($ownerItems.Count -eq 0) { Write-Log "无主人 @（本轮共 $($items.Count) 条通知）"; exit 0 }
 
 $maxT = ($ownerItems | Measure-Object -Property t -Maximum).Maximum
 
