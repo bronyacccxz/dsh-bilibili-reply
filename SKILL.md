@@ -156,6 +156,27 @@ python <video-watch>/scripts/transcribe.py \
 
 ---
 
+## 可选：让它自己盯着（自动检查 + 自动回复）
+
+不想每次都喊它？`tools/watch-at.ps1` 把整套流程变成后台自动化：**每 30 秒检查一次 @，
+命中就自己看视频、自己回评论，再用微信告诉你回了什么**。检查那一步不花模型 token ——
+脚本直接在已登录的浏览器里调 B 站接口，只有真要回复时才叫一次模型。
+
+```powershell
+cd <技能目录>\tools
+Copy-Item watch-at.config.example.ps1 watch-at.config.ps1   # 填路径与两个 UID
+.\watch-at.ps1 -Init          # 首次接入：把当前最新一条设为基准，历史积压不处理
+.\watch-at.ps1 -Test          # 给微信发一条测试消息
+.\watch-at.ps1 -InstallTask   # 装计划任务（1 分钟一轮 + 脚本内 30 秒补检）
+```
+
+**白名单**：只回 `$OwnerMid` 那个人的 @，而且被 @ 的必须是 `$SelfMid` ——
+群里那种一次 @ 一串人的通知会被自动丢掉，这正是最容易出错的地方。
+
+节拍、阈值、以及这套东西踩过的坑，见 [tools/README.md](tools/README.md)。
+
+---
+
 ## 已知的坑（都会真的发生）
 
 | 坑 | 症状 | 处理 |
@@ -167,6 +188,8 @@ python <video-watch>/scripts/transcribe.py \
 | **B 站风控** | 弹验证码 / 接口返 `-352` | 别连发太多条，隔开时间 |
 | **浏览器 daemon 空闲超时** | 报 `session not registered` | 重启 daemon 后重建会话（约 10 秒） |
 | **转写 0 段** | 歌曲类视频 | 加 `--no-vad` 重跑 |
+| **评论发出去了、别人看不到** | 接口回 `code 0`，自己看得见、别人看不见（影子隐藏） | 发送前先切到那条视频页；发完用**匿名**请求复查可见性 |
+| **计划任务里中文全乱** | PowerShell 没有控制台时用 GBK 解 UTF-8，JSON 直接解析失败 | 原生命令输出**重定向到文件**、再按 UTF-8 读 |
 
 ---
 

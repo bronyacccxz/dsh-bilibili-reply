@@ -7,3 +7,12 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# 自动模式的运行期产物（含 UID、会话 id、日志、私密评论内容）
+tools/watch-at.config.ps1
+tools/at-state.json
+tools/watch-at.log
+tools/replies.log
+tools/prompt-last.txt
+tools/reply.lock
+tools/watch-at-task.xml
