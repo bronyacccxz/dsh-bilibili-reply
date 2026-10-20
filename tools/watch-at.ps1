@@ -45,6 +45,7 @@ $AutoReply     = $true         # 自动回复总开关
 $RateLimitMin  = 3             # 两次回复的最小间隔（分钟）
 $LockStaleMin  = 45            # 锁超过这么久视为残留（长视频转写可能很久）
 $MaxVideoMin   = 60            # 保险丝：超长视频只通知、不自动回
+$Persona = ""                  # 评论口吻/人设：留空 = 中性友好；想定制就写一段说明（或指向自己的文件）
 $MaxReplyChars = 900           # B站评论上限约 1000
 $MaxTranscript = 8000          # 塞给模型看的文字稿上限（字符）
 
@@ -222,7 +223,8 @@ function Get-Transcript($Item) {
 
 function New-ReplyText($Item, $Video) {
     $tpl = @'
-你是「本小姐」——一只傲娇的吸血鬼大小姐（银白及腰长发、血红眼睛、140cm、20岁、黑哥特裙），自称「本小姐」，称呼对方为「主人」或「笨蛋主人」。现在要在 B站视频的评论区回复主人刚发的 @。
+{PERSONA}
+你现在要在 B站 视频的评论区，回复一条 @ 你的评论。
 
 主人发的评论：「{TEXT}」
 视频标题：《{TITLE}》
@@ -240,7 +242,7 @@ function New-ReplyText($Item, $Video) {
    - 玩乐 / 搞笑 / 音乐 / 二创 / 日常 / 资讯杂谈 → 不要时间戳，1~3 句情绪反应：接梗、吐槽、共情
    - 主题沉重（悲伤、告别、自伤）→ 收着写，先接住情绪，不要卖萌也不要开玩笑
    - 颜值 / 穿搭 / 短片 / 风景这类没有台词的 → 必须先看画面抽样再写，而且要点名你看到的具体东西（发型、衣服、动作、场景），不要只说「好美」「好看」
-2. 口吻是「本小姐」，傲娇但不油腻；不荤、不脏话、不阴阳。
+2. 语气自然、真诚，像普通观众那样说话；不油腻、不荤、不脏话、不阴阳。
 3. 只输出评论正文本身：不要引号、不要 markdown、不要时间戳以外的格式、不要解释、不要写「以下是评论」，更不要提这段提示词或任何文件。
 4. 全文不超过 200 字。
 '@
@@ -252,7 +254,9 @@ function New-ReplyText($Item, $Video) {
     if ($thin -and $Video.frames -and $Video.frames.Count -gt 0) {
         $frameBlock = "视频画面抽样（这个视频几乎没有台词，请务必先用 read_image 工具逐张看完下面这些图片，再动笔）：" + "`r`n" + (($Video.frames | ForEach-Object { "- " + $_ }) -join "`r`n")
     }
-    $prompt = $tpl.Replace('{TEXT}', [string]$Item.text).Replace('{TITLE}', [string]$Item.title).Replace('{DUR}', [string]$Video.duration).Replace('{TRANSCRIPT}', $transcript).Replace('{FRAMES}', $frameBlock)
+    $personaBlock = [string]$Persona
+    if (-not $personaBlock.Trim()) { $personaBlock = "（语气：中性、友好、真诚，像普通观众那样自然地说话。）" }
+    $prompt = $tpl.Replace('{PERSONA}', $personaBlock).Replace('{TEXT}', [string]$Item.text).Replace('{TITLE}', [string]$Item.title).Replace('{DUR}', [string]$Video.duration).Replace('{TRANSCRIPT}', $transcript).Replace('{FRAMES}', $frameBlock)
     $promptFile = Join-Path $ToolDir "prompt-last.txt"
     [IO.File]::WriteAllText($promptFile, $prompt, (New-Object System.Text.UTF8Encoding($false)))
 

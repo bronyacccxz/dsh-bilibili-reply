@@ -1,4 +1,4 @@
-# 复制成 watch-at.config.ps1，再按本机情况改（这个文件不会被提交）
+﻿# 复制成 watch-at.config.ps1，再按本机情况改（这个文件不会被提交）
 # 它是「覆盖」用的：只写你要改的那几行也行，其余保持 watch-at.ps1 里的默认值
 
 # ---- 可执行文件：不在 PATH 里就必须写绝对路径 ----
@@ -22,3 +22,4 @@ $TaskName   = "DSH-BiliAtWatch"
 # $RateLimitMin  = 3          # 两次回复最小间隔（分钟）
 # $LockStaleMin  = 45         # 锁过期（分钟）
 # $MaxVideoMin   = 60         # 超过这个时长的视频只通知不自动回
+# $Persona = ""              # 评论口吻/人设：留空 = 中性友好；也可以写一段自己的语气说明
