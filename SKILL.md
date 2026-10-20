@@ -1,4 +1,4 @@
----
+﻿---
 name: bilibili-reply
 description: 回复 B 站「@我的」评论。当用户说「我@你了」「去B站看看」「回复那条@」等要处理 B 站 @ 通知时使用。流程固定为：核对身份 → 读通知 → 用 video-watch 分析视频 → 回「@我的」界面用回复框发送。回复形式按视频类型决定（教学类详解+时间戳，玩乐类分享情绪）。
 ---
@@ -58,11 +58,29 @@ description: 回复 B 站「@我的」评论。当用户说「我@你了」「�
 
 ## 第二步：分析视频
 
+### 先拿免费素材：简介 / 官方字幕 / 弹幕摘要
+
+**别一上来就抽帧。** B站 的视频简介里经常自带章节时间轴、BGM 名、拍摄地；很多视频本身带校对过的官方字幕；弹幕密度能告诉你观众在哪里有反应。
+
+`tools/bili-context.ps1` 一次拿齐这三样（走浏览器登录态，零额外成本）：
+
+```powershell
+. "<repo>/tools/bili-context.ps1"
+$runner = { param($a) Invoke-BskTab $sid $tab $a }.GetNewClosure()
+$ctx = Get-BiliContext -Runner $runner -Aid <aid>      # 或 -Bvid BVxxxx
+# $ctx.desc / $ctx.subtitle / $ctx.danmaku_digest / $ctx.danmaku_count
+```
+
+- **有字幕就用字幕**，并给下面的 `watch.py` 加 `--no-transcribe` 跳过本地转写（字幕比 whisper 准）
+- **弹幕摘要**约 200 字（每分钟密度 + 高能处最多 8 条原话）。它只代表**观众反应**，不代表画面事实 —— 空镜类视频弹幕稀疏，别把「响」当「好看」
+
+### 再跑 video-watch 拿转写与画面
+
 拿到 BV 号后，用 `video-watch` 技能处理（先加载该技能）：
 
 ```bash
 # 按你的实际路径调整
-python <video-watch>/scripts/watch.py "https://www.bilibili.com/video/BVxxxx/" --language zh --model small
+python <video-watch>/scripts/watch.py "https://www.bilibili.com/video/BVxxxx/" --language zh --model small --max-frames 10
 ```
 
 读 `<run_dir>/transcript.txt`（每行 `[MM:SS] 文本`）。
@@ -198,3 +216,52 @@ Copy-Item watch-at.config.example.ps1 watch-at.config.ps1   # 填路径与两个
 - 本技能会**以你的身份在公开评论区发言**。请自行确认发出去的内容得体。
 - 建议用小号；自动化操作有触发平台风控的可能。
 - **不要在一条视频下连发多条**，也不要批量刷。
+
+## 自动化细节（v2）
+
+### 无窗口运行
+
+计划任务**不要**直接跑 `powershell.exe` —— 那样每轮会闪一个控制台窗口。用仓库里的隐藏启动器：
+
+```
+任务动作：wscript.exe //B //Nologo "<repo>\tools\run-hidden.vbs"
+运行级别：最低权限（/RL LIMITED）
+```
+
+`run-hidden.vbs` 用 `WScript.Shell.Run ...,0,False` 启动，脚本内的「30 秒补检」也走同一个 vbs。
+
+### 30 秒节拍怎么来的
+
+计划任务最快 1 分钟一轮，所以脚本每轮收工时用 `-SecondPass` **先睡 30 秒再跑**，把节拍补成约 30 秒。**别改成立刻拉起** —— 那等于连着跑两遍，不是 30 秒。
+
+### 浏览器没开就自动拉起
+
+每轮先查 `bsk browsers`；没连上就检查 `Get-Process chrome`，没开就启动 Chrome（最小化打开 bilibili.com），然后 3 秒一查、最多等 45 秒等扩展连回来。
+
+### 并发闸
+
+`check.lock`：22 秒内已有轮次在跑就直接让路，防止两轮同时读到同一条 @ 而**重复回复**。
+
+### 失败的 @ 会被吞
+
+只要进了回复分支，无论成败都会推进 `at-state.json` 的 `cursor` 并写入 `seen` —— 这条 @ **不会再重试**。排查失败原因后要手动把 `cursor` 退回去、把 `seen` 清空。
+
+### 关键帧怎么挑
+
+不是均匀抽样，是**对齐台词时间点**：从字幕/转写抓所有 `[MM:SS]` → 每个时间点取最近的帧（差 ≤6 秒）→ 时间差 <1.2 秒的算同一处去重 → 不够预算再均匀补齐。
+
+预算：**全片 ≤60 秒读 8 张，≤180 秒 6 张，更长 5 张，纯音乐 3 张**。
+
+### 抽帧参数
+
+`--max-frames 10`，模式用默认 `auto`（场景点 + 均匀补齐）。**纯 `--mode scene` 在短视频上会饿死** —— 实测 12 秒视频只出 2 帧。
+
+## 更多踩过的坑
+
+| 坑 | 症状 | 解决 |
+|---|---|---|
+| **`.ps1` 没有 BOM** | PowerShell 5.1 按 ANSI 读中文 → ParseError / 中文全乱 | 存成 UTF-8 with BOM |
+| **空数组被展开成 `$null`** | 接口回 0 条被误判成「取数失败」，反复重试后跳过 | `return ,@($payload.items)` |
+| **`av` 版本不兼容** | `open() got an unexpected keyword argument 'metadata_errors'` | 删掉 faster_whisper/audio.py 里那个参数（升级会被还原） |
+| **headless 缺 API key** | 两秒就报「写评论失败或跑偏」 | `dsh --profile headless` 不读 credentials 的 refs，要先把它放进环境变量 |
+| **没字幕就以为没素材** | 音乐/空镜类完全读不出内容 | 至少拿简介 + 弹幕摘要 |

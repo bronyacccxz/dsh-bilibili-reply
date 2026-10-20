@@ -45,8 +45,9 @@ $AutoReply     = $true         # 自动回复总开关
 $RateLimitMin  = 3             # 两次回复的最小间隔（分钟）
 $LockStaleMin  = 45            # 锁超过这么久视为残留（长视频转写可能很久）
 $MaxVideoMin   = 60            # 保险丝：超长视频只通知、不自动回
-$Persona = ""                  # 评论口吻/人设：留空 = 中性友好；想定制就写一段说明（或指向自己的文件）
 $MaxReplyChars = 900           # B站评论上限约 1000
+$Persona = ""                  # 评论口吻：留空 = 中性友好
+$MemoryFile = ""               # 可选：一段背景文本（例如最近聊过的事），会塞进提示词
 $MaxTranscript = 8000          # 塞给模型看的文字稿上限（字符）
 
 $ToolDir     = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -68,6 +69,15 @@ try { $OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
 function Write-Log([string]$Message) {
     $line = "{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
     Add-Content -Path $LogFile -Value $line -Encoding UTF8
+}
+
+function Start-SecondPass {
+    # 计划任务最快 1 分钟一轮；每轮收工前补一次 +30 秒的复查，凑成 30 秒节拍。
+    if ($SecondPass) { return }
+    try {
+        $vbs = Join-Path $PSScriptRoot "run-hidden.vbs"
+        if (Test-Path $vbs) { Start-Process -FilePath "wscript.exe" -WindowStyle Hidden -ArgumentList @("//B", "//Nologo", $vbs, "-SecondPass") | Out-Null }
+    } catch { }
 }
 
 function Write-ReplyLog([string]$Message) {
@@ -101,6 +111,9 @@ function Set-StateProperty($State, [string]$Name, $Value) {
 function Save-State($State) {
     $State | ConvertTo-Json -Depth 5 | Set-Content -Path $StateFile -Encoding UTF8
 }
+
+$BiliCtx = Join-Path $PSScriptRoot "bili-context.ps1"
+if (Test-Path $BiliCtx) { . $BiliCtx }
 
 function Invoke-Bsk([string[]]$Arguments) {
     # 关键：重定向到文件再按 UTF-8 读。计划任务里没有控制台，
@@ -174,7 +187,11 @@ function Get-AtItems([string]$SessionId, [string]$TabId, $State) {
     }
     try {
         $payload = $m.Value | ConvertFrom-Json
-        if ($payload.code -eq 0) { return $payload.items }
+        if ($payload.code -eq 0) {
+            # ⚠️ 空数组会被 PowerShell 展开成 $null，上层就会误判成「取数失败」。
+            # 用 ,@() 强制包一层，返回「空数组」而不是 $null。
+            return ,@($payload.items)
+        }
         Write-Log "  接口返回 code=$($payload.code) msg=$($payload.message)"
     } catch {
         $raw = ($out -replace "`r?`n", " ").Trim()
@@ -184,10 +201,82 @@ function Get-AtItems([string]$SessionId, [string]$TabId, $State) {
     return $null
 }
 
-function Get-Transcript($Item) {
+function Select-KeyFrames($RunDir, [string]$Text, $Duration, [bool]$Song) {
+    # 关键帧挑选：优先对齐台词时间点，再补足覆盖，最后按预算截断
+    $fj = Join-Path $RunDir "frames\frames.json"
+    if (-not $RunDir -or -not (Test-Path $fj)) { return @() }
+    try { $arr = @(Get-Content $fj -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return @() }
+    if ($arr.Count -eq 0) { return @() }
+
+    $dur = [double]$Duration
+    $budget = 5
+    if ($Song) { $budget = 3 }
+    elseif ($dur -le 60) { $budget = 8 }
+    elseif ($dur -le 180) { $budget = 6 }
+
+    # 台词里的时间点
+    $times = @()
+    if ($Text) {
+        foreach ($mm in [regex]::Matches($Text, '\[(\d{1,2}):(\d{2})\]')) {
+            $times += ([int]$mm.Groups[1].Value * 60 + [int]$mm.Groups[2].Value)
+        }
+    }
+
+    $picked = @()
+    $usedIdx = @{}
+    $lastT = -999.0
+    foreach ($t in $times) {
+        $best = -1; $bestD = 1e9
+        for ($i = 0; $i -lt $arr.Count; $i++) {
+            if ($usedIdx.ContainsKey($i)) { continue }
+            $d = [Math]::Abs([double]$arr[$i].actual_t - $t)
+            if ($d -lt $bestD) { $bestD = $d; $best = $i }
+        }
+        if ($best -ge 0 -and $bestD -le 6 -and ([Math]::Abs([double]$arr[$best].actual_t - $lastT) -gt 1.2)) {
+            $picked += $best
+            $usedIdx[$best] = 1
+            $lastT = [double]$arr[$best].actual_t
+            if ($picked.Count -ge $budget) { break }
+        }
+    }
+
+    # 不够就用均匀分布补齐
+    if ($picked.Count -lt $budget -and $arr.Count -gt 0) {
+        $need = $budget - $picked.Count
+        for ($k = 0; $k -lt $need; $k++) {
+            $idx = [int][Math]::Round(($arr.Count - 1) * ($k + 0.5) / $need)
+            if ($idx -lt 0) { $idx = 0 }
+            if ($idx -ge $arr.Count) { $idx = $arr.Count - 1 }
+            if (-not $usedIdx.ContainsKey($idx)) { $picked += $idx; $usedIdx[$idx] = 1 }
+        }
+    }
+
+    $files = @()
+    foreach ($i in ($picked | Sort-Object -Unique)) {
+        $files += (Join-Path $RunDir ("frames\" + $arr[$i].file))
+    }
+    return $files
+}
+
+function Get-Transcript([string]$SessionId, [string]$TabId, $Item) {
     $song = $Item.title -match '翻唱|中文ver|中文版|歌|曲|音乐|BGM|纯音乐|演奏|cover|Cover|instrumental|OST'
-    $wargs = @("scripts\watch.py", $Item.url, "--language", "zh", "--model", "small", "--no-review")
+
+    # 1) 素材：简介 / 字幕 / 弹幕摘要 —— 逻辑都在 video-watch\scripts\bili-context.ps1
+    $ctx = $null
+    try {
+        $runner = { param($a) Invoke-BskTab $SessionId $TabId $a }.GetNewClosure()
+        $ctx = Get-BiliContext -Runner $runner -Aid ([string]$Item.oid) -Bvid "" -Title ([string]$Item.title)
+    } catch { Write-Log "  取 B站 素材失败：$($_.Exception.Message)" }
+    $sub = ""
+    if ($ctx -and $ctx.subtitle) { $sub = $ctx.subtitle }
+    $useSub = ($sub -and $sub.Trim().Length -gt 80)
+    if ($useSub) { Write-Log "  拿到 B站 字幕：$($sub.Length) 字（跳过本地转写）" }
+    if ($ctx -and $ctx.ok) { Write-Log "  简介 $($ctx.desc.Length) 字；弹幕 $($ctx.danmaku_count) 条" }
+
+    $wargs = @("scripts\watch.py", $Item.url, "--language", "zh", "--model", "small", "--no-review", "--max-frames", "10")
     if ($song) { $wargs += @("--no-vad", "--no-frames") }
+    if ($useSub) { $wargs += @("--no-transcribe") }
+
     $tmpOut = Join-Path $env:TEMP "vw-$PID.out"
     $tmpErr = Join-Path $env:TEMP "vw-$PID.err"
     Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
@@ -200,35 +289,42 @@ function Get-Transcript($Item) {
     $m = [regex]::Match($out, 'RESULT_JSON:\s*(\{.*\})')
     if (-not $m.Success) { return $null }
     try { $res = $m.Groups[1].Value | ConvertFrom-Json } catch { return $null }
+    if ($res.ok -eq $false) { Write-Log "  watch.py 失败：$($res.error)"; return $null }
+    if (-not $res.run_dir) { Write-Log "  watch.py 没返回 run_dir（可能中途失败）"; return $null }
+
     $text = ""
-    if ($res.transcript_txt -and (Test-Path $res.transcript_txt)) {
+    if ($useSub) {
+        $text = $sub
+    } elseif ($res.transcript_txt -and (Test-Path $res.transcript_txt)) {
         $text = Get-Content $res.transcript_txt -Raw -Encoding UTF8
-        if ($null -eq $text) { $text = "" }   # 无台词的短片：文件 0 字节，-Raw 读出来是 null
+        if ($null -eq $text) { $text = "" }
     }
-    # 没有台词的短片（颜值/穿搭/风景）只能靠画面 —— 挑几张抽样帧让模型自己看
+
     $frames = @()
-    $fj = Join-Path $res.run_dir "frames\frames.json"
-    if (Test-Path $fj) {
-        try {
-            $arr = @(Get-Content $fj -Raw -Encoding UTF8 | ConvertFrom-Json)
-            if ($arr.Count -gt 0) {
-                foreach ($i in (@(0, [int]($arr.Count / 3), [int]($arr.Count * 2 / 3), ($arr.Count - 1)) | Select-Object -Unique)) {
-                    if ($i -ge 0 -and $i -lt $arr.Count) { $frames += (Join-Path $res.run_dir ("frames\" + $arr[$i].file)) }
-                }
-            }
-        } catch { }
-    }
-    return [pscustomobject]@{ run_dir = $res.run_dir; transcript = $text; duration = $res.duration; title = $res.title; song = $song; frames = $frames }
+    try { $frames = @(Select-KeyFrames $res.run_dir $text $res.duration $song) } catch { $frames = @() }
+
+    return [pscustomobject]@{ run_dir = $res.run_dir; transcript = $text; duration = $res.duration; title = $res.title; song = $song; frames = $frames; from_subtitle = $useSub; desc = $(if ($ctx -and $ctx.ok) { $ctx.desc } else { "" }); danmaku = $(if ($ctx -and $ctx.ok) { $ctx.danmaku_digest } else { "" }) }
 }
 
 function New-ReplyText($Item, $Video) {
     $tpl = @'
 {PERSONA}
-你现在要在 B站 视频的评论区，回复一条 @ 你的评论。
+
+——— 平台规则（优先于上面人格里所有关于「QQ 消息」的格式要求）———
+你现在不在 QQ，而是在 B站 视频评论区，回复主人刚发的一条 @。你的 B站 账号叫「血月银霜」。
+禁止出现：[语音] 标记、markdown、分点列表、动作描写、括号旁白、任何 &&xxx&& 之类的表情标签。
+评论正文不超过 200 字。
 
 主人发的评论：「{TEXT}」
 视频标题：《{TITLE}》
 视频时长：约 {DUR} 秒
+视频简介：{DESC}
+（观众弹幕摘要，只代表观众反应、不代表画面事实）：{DANMAKU}
+
+（跨平台记忆）你和主人在 QQ 上最近聊过这些，是同一段关系、同一段时间线，必须当成你自己经历过的事：
+-----
+{MEMORY}
+-----
 
 视频文字稿（本地语音转写，可能有同音错别字，按语境理解）：
 -----
@@ -242,7 +338,7 @@ function New-ReplyText($Item, $Video) {
    - 玩乐 / 搞笑 / 音乐 / 二创 / 日常 / 资讯杂谈 → 不要时间戳，1~3 句情绪反应：接梗、吐槽、共情
    - 主题沉重（悲伤、告别、自伤）→ 收着写，先接住情绪，不要卖萌也不要开玩笑
    - 颜值 / 穿搭 / 短片 / 风景这类没有台词的 → 必须先看画面抽样再写，而且要点名你看到的具体东西（发型、衣服、动作、场景），不要只说「好美」「好看」
-2. 语气自然、真诚，像普通观众那样说话；不油腻、不荤、不脏话、不阴阳。
+2. 口吻按 Persona 的设定来；没设就用中性、友好的语气。角色扮演类风格也别油腻：不荤、不脏话、不阴阳。
 3. 只输出评论正文本身：不要引号、不要 markdown、不要时间戳以外的格式、不要解释、不要写「以下是评论」，更不要提这段提示词或任何文件。
 4. 全文不超过 200 字。
 '@
@@ -254,14 +350,46 @@ function New-ReplyText($Item, $Video) {
     if ($thin -and $Video.frames -and $Video.frames.Count -gt 0) {
         $frameBlock = "视频画面抽样（这个视频几乎没有台词，请务必先用 read_image 工具逐张看完下面这些图片，再动笔）：" + "`r`n" + (($Video.frames | ForEach-Object { "- " + $_ }) -join "`r`n")
     }
-    $personaBlock = [string]$Persona
-    if (-not $personaBlock.Trim()) { $personaBlock = "（语气：中性、友好、真诚，像普通观众那样自然地说话。）" }
-    $prompt = $tpl.Replace('{PERSONA}', $personaBlock).Replace('{TEXT}', [string]$Item.text).Replace('{TITLE}', [string]$Item.title).Replace('{DUR}', [string]$Video.duration).Replace('{TRANSCRIPT}', $transcript).Replace('{FRAMES}', $frameBlock)
+    # 跨平台记忆：把 QQ 那边最近聊的内容带进来（由 memory_bridge 插件写）
+    $desc = ""
+    if ($Video -and $Video.desc) { $desc = [string]$Video.desc }
+    if (-not $desc) { $desc = "（没有简介）" }
+    $danmaku = ""
+    if ($Video -and $Video.danmaku) { $danmaku = [string]$Video.danmaku }
+    if (-not $danmaku) { $danmaku = "（没有弹幕或取不到）" }
+
+    $memory = ""
+    if ($MemoryFile -and (Test-Path $MemoryFile)) {
+        try {
+            $memory = [IO.File]::ReadAllText($MemoryFile, [Text.Encoding]::UTF8).Trim()
+        } catch { $memory = "" }
+        if ($memory.Length -gt 1800) { $memory = $memory.Substring($memory.Length - 1800) }
+    }
+    if (-not $memory) { $memory = "（没有额外背景，按你自己的语气写就好。）" }
+
+    $persona = [string]$Persona
+    if (-not $persona.Trim()) { $persona = "（语气：中性、友好、真诚，像普通观众那样自然地说话。）" }
+
+    $prompt = $tpl.Replace('{PERSONA}', $persona).Replace('{TEXT}', [string]$Item.text).Replace('{TITLE}', [string]$Item.title).Replace('{DUR}', [string]$Video.duration).Replace('{TRANSCRIPT}', $transcript).Replace('{FRAMES}', $frameBlock).Replace('{MEMORY}', $memory).Replace('{DESC}', $desc).Replace('{DANMAKU}', $danmaku)
     $promptFile = Join-Path $ToolDir "prompt-last.txt"
     [IO.File]::WriteAllText($promptFile, $prompt, (New-Object System.Text.UTF8Encoding($false)))
 
     # 短指令 + 让干活的会话自己去读文件：避免长文本走命令行/管道被弄坏
     $task = "第一步：读取文件 $promptFile （UTF-8 文本）。第二步：严格按该文件的要求写作。只输出最终那一条 B站评论正文，不要引号、不要解释、不要复述文件。"
+    # headless 那份 profile 不认识 credentials 里的 refs，必须把 key 放进环境变量，
+    # 否则 dsh 直接 MISSING_CREDENTIAL，两秒就退（表现就是「写评论失败或跑偏」）。
+    if (-not $env:DEEPSEEK_API_KEY) {
+        try {
+            $credFile = Join-Path $env:USERPROFILE ".dsh\.credentials.yaml"
+            if (Test-Path $credFile) {
+                foreach ($ln in (Get-Content $credFile -Encoding UTF8)) {
+                    if ($ln -match '^\s*DEEPSEEK_API_KEY:\s*(\S+)\s*$') { $env:DEEPSEEK_API_KEY = $Matches[1]; break }
+                }
+            }
+        } catch { }
+        if (-not $env:DEEPSEEK_API_KEY) { Write-Log "  没读到 DEEPSEEK_API_KEY（.credentials.yaml）" }
+    }
+
     $out = & $Dsh --profile headless --json $task 2>$null | Out-String
     $text = ""
     foreach ($line in ($out -split "`r?`n")) {
@@ -269,7 +397,7 @@ function New-ReplyText($Item, $Video) {
             try { $text = ($line | ConvertFrom-Json).text } catch { }
         }
     }
-    if (-not $text) { return $null }
+    if (-not $text) { Write-Log "  dsh 没吐出 final 文本（检查 headless 的密钥/模型）"; return $null }
     $text = $text.Trim()
     $text = $text -replace '^```[a-z]*\s*', '' -replace '\s*```$', ''
     $text = $text.Trim().Trim('"').Trim()
@@ -360,8 +488,30 @@ if ($daemonOut -notmatch 'running|"ok":\s*true|daemon') {
 $browsers = Invoke-Bsk @("browsers", "--json")
 $browserOk = if ($Browser) { $browsers -match $Browser } else { $browsers -match '"instance_id"' }
 if (-not $browserOk) {
-    Write-Log "跳过：没有可用的浏览器连接（Chrome 没开？）"
-    exit 0
+    # 没连上就把 Chrome 拉起来，再等扩展自己连回来
+    if (-not (Get-Process chrome -ErrorAction SilentlyContinue)) {
+        $chromeExe = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+        if (-not (Test-Path $chromeExe)) { $chromeExe = "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" }
+        if (Test-Path $chromeExe) {
+            Write-Log "Chrome 没开，自动启动"
+            try { Start-Process -FilePath $chromeExe -ArgumentList "https://www.bilibili.com" -WindowStyle Minimized } catch { }
+        } else {
+            Write-Log "找不到 chrome.exe，无法自动启动"
+        }
+    } else {
+        Write-Log "Chrome 在跑，但扩展还没连上，等它"
+    }
+    for ($i = 0; $i -lt 15; $i++) {
+        Start-Sleep -Seconds 3
+        $browsers = Invoke-Bsk @("browsers", "--json")
+        $browserOk = if ($Browser) { $browsers -match $Browser } else { $browsers -match '"instance_id"' }
+        if ($browserOk) { break }
+    }
+    if (-not $browserOk) {
+        Write-Log "跳过：Chrome 起来了但扩展 45 秒内没连上"
+        exit 0
+    }
+    Write-Log "Chrome 已连上，继续检查"
 }
 
 # 3) 上一轮还在跑就别碰浏览器（避免两个实例抢同一个标签页）
@@ -381,6 +531,20 @@ if (-not $sessionId) {
     exit 0
 }
 if ($sessionId -ne $state.session) { Set-StateProperty $state "session" $sessionId; Save-State $state }
+
+# 4.5) -SecondPass 是「补检」进程：先睡 30 秒，再开始干，
+# 这样「0 秒本检 + 30 秒补检」才真凑成 30 秒一次（以前是立刻跑，等于连着跑两遍）。
+if ($SecondPass) { Start-Sleep -Seconds 30 }
+
+# 4.6) 并发闸：22 秒内已经有一轮在跑，就直接让路，避免两轮同时发现同一条 @ 而重复回复。
+$CheckLock = Join-Path $ToolDir "check.lock"
+try {
+    if (Test-Path $CheckLock) {
+        $age = ((Get-Date) - (Get-Item $CheckLock).LastWriteTime).TotalSeconds
+        if ($age -lt 22) { exit 0 }
+    }
+    Set-Content -Path $CheckLock -Value (Get-Date -Format "s") -Encoding ASCII
+} catch { }
 
 # 5) 抓 @ 列表：标签页已经在 B站就免导航（30 秒一轮时这一步很关键）
 $tabId = ""
@@ -423,15 +587,16 @@ if ($null -eq $items) {
 # 6) 接口回 0 条 = 可疑（多半被限流或抖动）：去「@ 我的」页面刷一下再问一次
 if ($items.Count -eq 0) {
     Write-Log "接口返回 0 条，切到消息中心刷新后重试"
-    Invoke-Bsk @("navigate", "--session", $sessionId, "https://message.bilibili.com/#/at", "--wait-until", "domcontentloaded", "--quiet") | Out-Null
-    Start-Sleep -Seconds 3
+    # 不整页跳消息中心（那个页面重，一次要 30 多秒，把 30 秒节拍全吃掉了）；
+    # 只等 2 秒重发一次请求，同样是「确认是不是瞬时抖动」。
+    Start-Sleep -Seconds 2
     $items = Get-AtItems $sessionId "" $state
-    if ($null -eq $items -or $items.Count -eq 0) { Write-Log "接口仍然 0 条，本轮跳过"; exit 0 }
+    if ($null -eq $items -or $items.Count -eq 0) { Write-Log "接口仍然 0 条，本轮跳过"; Start-SecondPass; exit 0 }
 }
 
 # 7) 白名单：只留「主人 @ 了我」
 $ownerItems = @($items | Where-Object { $_.mid -eq $OwnerMid -and ($_.ats -contains $SelfMid) })
-if ($ownerItems.Count -eq 0) { Write-Log "无主人 @（本轮共 $($items.Count) 条通知）"; exit 0 }
+if ($ownerItems.Count -eq 0) { Write-Log "无主人 @（本轮共 $($items.Count) 条通知）"; Start-SecondPass; exit 0 }
 
 $maxT = ($ownerItems | Measure-Object -Property t -Maximum).Maximum
 
@@ -442,6 +607,7 @@ if ($Init -or $state.cursor -eq 0) {
     Set-StateProperty $state "last_check" (Get-Date).ToString('s')
     Save-State $state
     Write-Log "初始化基准 cursor=$maxT（积压 $($ownerItems.Count) 条不处理）"
+    Start-SecondPass
     exit 0
 }
 
@@ -452,7 +618,8 @@ if ($new.Count -eq 0) {
     Save-State $state
     if (-not $SecondPass) {
         # 计划任务最快只能 1 分钟一轮：自己再补一次 30 秒后的检查，凑成 30 秒节拍
-        Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", $MyInvocation.MyCommand.Path, "-SecondPass"
+        $vbs = Join-Path $PSScriptRoot "run-hidden.vbs"
+        if (Test-Path $vbs) { Start-Process -FilePath "wscript.exe" -WindowStyle Hidden -ArgumentList @("//B", "//Nologo", $vbs, "-SecondPass") | Out-Null }
         Write-Log "无新 @，30 秒后再看一次"
         exit 0
     }
@@ -479,7 +646,7 @@ if ($AutoReply -and -not $NoReply) {
             }
         }
 
-        $video = Get-Transcript $item
+        $video = Get-Transcript $sessionId $tabId $item
         Write-Log "  取文字稿 $([int]$clock.Elapsed.TotalSeconds)s"
         if ($null -eq $video) {
             $result = "取文字稿失败"
